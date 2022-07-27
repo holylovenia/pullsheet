@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"reflect"
 
 	"github.com/blevesearch/segment"
 	"github.com/google/go-github/v33/github"
@@ -34,8 +35,20 @@ import (
 
 var notSegmentRe = regexp.MustCompile(`[/-_]+`)
 
-// ReviewSummary a summary of a users reviews on a PR
+// ReviewCommentSummary a summary of a users reviews on a PR
 type ReviewSummary struct {
+	URL            string
+	Date           string
+	Project        string
+	Reviewers      []string
+	PRAuthor       string
+	Title          string
+	Reviewer       string
+	ReviewComments int
+	Words          int
+}
+
+type ReviewCommentSummary struct {
 	URL            string
 	Date           string
 	Project        string
@@ -52,6 +65,15 @@ type comment struct {
 	Body      string
 	Review    bool
 	CreatedAt time.Time
+}
+
+func stringInSlice(a string, list []string) bool {
+    for _, b := range list {
+        if b == a {
+            return true
+        }
+    }
+    return false
 }
 
 // MergedReviews returns a list of pull requests in a project (merged only)
@@ -71,8 +93,11 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 
 	for _, pr := range prs {
 		// username -> summary
-		prMap := map[string]*ReviewSummary{}
+		prMap := map[string]*ReviewCommentSummary{}
+		prReviewsMap := map[int]*ReviewSummary{}
 		comments := []comment{}
+
+		klog.Infof("HELLO %d", pr.GetNumber())
 
 		// There is wickedness in the GitHub API: PR comments are available via the Issues API, and PR *review* comments are available via the PullRequests API
 		cs, err := ghcache.PullRequestsListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
@@ -86,15 +111,16 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 			}
 
 			body := strings.TrimSpace(cs[idx].GetBody())
-			comments = append(comments, comment{Author: cs[idx].GetUser().GetLogin(), Body: body, CreatedAt: cs[idx].GetCreatedAt(), Review: true})
+			comments = append(comments, comment{Author: cs[idx].GetUser().GetLogin(), Body: body, CreatedAt: cs[idx].GetCreatedAt(), Review: false})
 		}
 
-		is, err := ghcache.IssuesListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
+		is, err := ghcache.PullRequestsListReviews(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
 		if err != nil {
 			return nil, err
 		}
 
-		for _, i := range is {
+		for count, i := range is {
+			klog.Infof("LOLOL %d %d %s", pr.GetNumber(), count, i.GetUser().GetLogin())
 			if isBot(i.GetUser()) {
 				continue
 			}
@@ -105,10 +131,12 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 				continue
 			}
 
-			comments = append(comments, comment{Author: i.GetUser().GetLogin(), Body: body, CreatedAt: i.GetCreatedAt(), Review: false})
+			comments = append(comments, comment{Author: i.GetUser().GetLogin(), Body: body, CreatedAt: i.GetSubmittedAt(), Review: true})
 		}
 
 		for _, c := range comments {
+			// klog.Infof("HELLO %d %d %s %s", pr.GetNumber(), i, c.Author, c)
+
 			if c.CreatedAt.After(until) {
 				continue
 			}
@@ -128,7 +156,7 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 			wordCount := wordCount(c.Body)
 
 			if prMap[c.Author] == nil {
-				prMap[c.Author] = &ReviewSummary{
+				prMap[c.Author] = &ReviewCommentSummary{
 					URL:      pr.GetHTMLURL(),
 					PRAuthor: pr.GetUser().GetLogin(),
 					Reviewer: c.Author,
@@ -136,19 +164,42 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 					Title:    strings.TrimSpace(pr.GetTitle()),
 				}
 			}
-
+			if prReviewsMap[pr.GetNumber()] == nil {
+				prReviewsMap[pr.GetNumber()] = &ReviewSummary{
+					URL:       pr.GetHTMLURL(),
+					PRAuthor:  pr.GetUser().GetLogin(),
+					Project:   project,
+					Title:     strings.TrimSpace(pr.GetTitle()),
+					Reviewers: []string{c.Author},
+				}
+				// klog.Infof("ADD %d %d %s", pr.GetNumber(), count2, prReviewsMap[pr.GetNumber()].Reviewers)
+			} else {
+				if stringInSlice(c.Author, prReviewsMap[pr.GetNumber()].Reviewers) == false {
+					prReviewsMap[pr.GetNumber()].Reviewers = append(prReviewsMap[pr.GetNumber()].Reviewers, c.Author)
+					// klog.Infof("ADD %d %d %s", pr.GetNumber(), count2, prReviewsMap[pr.GetNumber()].Reviewers)
+				}
+			}
 			if c.Review {
 				prMap[c.Author].ReviewComments++
 			} else {
 				prMap[c.Author].PRComments++
 			}
 
+			prReviewsMap[pr.GetNumber()].Date = c.CreatedAt.Format(dateForm)
 			prMap[c.Author].Date = c.CreatedAt.Format(dateForm)
 			prMap[c.Author].Words += wordCount
 			klog.Infof("%d word comment by %s: %q for %s/%s #%d", wordCount, c.Author, strings.TrimSpace(c.Body), org, project, pr.GetNumber())
+
+			// klog.Infof("HELLO %d %s", pr.GetNumber(), prReviewsMap[pr.GetNumber()])
 		}
 
-		for _, rs := range prMap {
+		for _, rs := range prReviewsMap {
+			// klog.Infof("HELLO %d %s", pr.GetNumber(), rs.Reviewers)
+			if reflect.TypeOf(rs.Reviewers).String() == "string" {
+				rs.Reviewer = rs.Reviewers[0]
+			} else {
+				rs.Reviewer = strings.Join(rs.Reviewers, ",")
+			}
 			reviews = append(reviews, rs)
 		}
 	}

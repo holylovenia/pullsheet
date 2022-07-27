@@ -107,6 +107,43 @@ func PullRequestsListComments(ctx context.Context, p persist.Cacher, c *github.C
 	return cs, p.Set(key, &persist.Blob{GHPullRequestComments: cs})
 }
 
+func PullRequestsListReviews(ctx context.Context, p persist.Cacher, c *github.Client, t time.Time, org string, project string, num int) ([]*github.PullRequestReview, error) {
+	key := fmt.Sprintf("pr-reviews-%s-%s-%d", org, project, num)
+	// val := p.Get(key, t)
+
+	// klog.Infof("HAHAHAHA %s", org)
+
+	// if val != nil {
+	// 	return val.GHPullRequestReviews, nil
+	// }
+
+	klog.Infof("cache miss for %v", key)
+
+	cs := []*github.PullRequestReview{}
+	opts := &github.ListOptions{PerPage: 100}
+
+	count := 0
+
+	for {
+		csp, resp, err := c.PullRequests.ListReviews(ctx, org, project, num, opts)
+		if err != nil {
+			return nil, fmt.Errorf("get: %v", err)
+		}
+		count += 1
+		// klog.Infof("HAHAHAHA %d", count)
+
+		cs = append(cs, csp...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	// return nil, nil
+	return cs, nil
+}
+
 func IssuesGet(ctx context.Context, p persist.Cacher, c *github.Client, t time.Time, org string, project string, num int) (*github.Issue, error) {
 	key := fmt.Sprintf("issue-%s-%s-%d", org, project, num)
 	val := p.Get(key, t)
